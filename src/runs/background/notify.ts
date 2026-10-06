@@ -986,7 +986,9 @@ export default function registerSubagentNotify(
 			const sessionId = sessionManager.getSessionId(); // UUID, not state.currentSessionId's possible file path.
 			const retained = queuedWakes.get(sessionManager);
 			const wakes = retained?.sessionId === sessionId ? retained.wakes : [];
-			const unanswered = retained?.sessionId === sessionId ? retained.unansweredCompletions : new Map<string, { reminded: boolean }>();
+			const unanswered = retained?.sessionId === sessionId && retained.unansweredCompletions instanceof Map
+				? retained.unansweredCompletions
+				: new Map<string, { reminded: boolean }>(wakes.map(content => [content, { reminded: false }]));
 			// Before the first bind, local wakes belong to this session; after it, to the previous one.
 			if (!bound) {
 				wakes.push(...unstartedWakes);
