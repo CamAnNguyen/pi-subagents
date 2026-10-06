@@ -1936,6 +1936,8 @@ Answer only from the supplied synthetic text.
 				{ workflowKey: "stage2", runId: undefined, reused: undefined },
 			]);
 			assert.ok(relaunched.workflow?.trace.some((entry) => entry.key === "stage1" && entry.state === "completed" && entry.reused === true));
+			const reusedRow = relaunched.steps?.find((step) => step.workflowKey === "stage1");
+			assert.deepEqual({ tokens: reusedRow?.tokens, turnCount: reusedRow?.turnCount }, { tokens: { input: 100, output: 50, total: 150 }, turnCount: 1 });
 		});
 
 		it("relaunches failed children, and a user stop records no stop cause and ends reuse", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
@@ -2001,6 +2003,11 @@ Answer only from the supplied synthetic text.
 				{ workflowKey: "stage3", reused: undefined },
 			]);
 			assert.equal(relaunched.steps?.[1]?.runId, stage2RunId);
+			assert.deepEqual(relaunched.steps?.map(({ workflowKey, tokens, turnCount }) => ({ workflowKey, total: tokens?.total, turnCount })), [
+				{ workflowKey: "stage1", total: 150, turnCount: 1 },
+				{ workflowKey: "stage2", total: 150, turnCount: 1 },
+				{ workflowKey: "stage3", total: 150, turnCount: 1 },
+			]);
 			assert.equal(fs.existsSync(path.join(DIRS.async, stage2RunId, "workflow-result.json")), false, "the relaunch consumes the awaited result like the normal path");
 		});
 
@@ -2878,6 +2885,27 @@ Answer only from the supplied synthetic text.
 		assert.deepEqual(persisted.results?.map((entry) => entry.error), ["Subagent timed out after 150ms."]);
 		fs.rmSync(childDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 });
 		fs.rmSync(childResultPath, { force: true });
+	});
+
+	it("carries workflow child usage onto the parent's step rows", { skip: !createSubagentExecutor ? "executor not importable" : undefined }, async () => {
+		mockPi.onCall({ output: "detached child", matchArgIncludes: "Detached" });
+		mockPi.onCall({ output: "in-process child", matchArgIncludes: "In process" });
+		const started = await makeExecutor([makeAgent("echo")], {}, true).execute(
+			`scripted-workflow-child-usage-${Date.now()}`,
+			{ workflowScript: `const [a, b] = await runs.all([{ key: "detached", agent: "echo", task: "Detached" }, { key: "inline", agent: "echo", task: "In process", async: false }]); return a.runId;` },
+			new AbortController().signal,
+			undefined,
+			makeMinimalCtx(tempDir),
+		);
+		const status = await waitForAsyncState(started.details.asyncId!, (candidate) => ["complete", "failed", "stopped"].includes(candidate.state ?? ""), 60_000) as AsyncStatus;
+		assert.equal(status.state, "complete");
+		const detachedStatus = JSON.parse(fs.readFileSync(path.join(DIRS.async, status.workflow?.value as string, "status.json"), "utf-8")) as AsyncStatus;
+		const rows = Object.fromEntries((status.steps ?? []).map((step) => [step.workflowKey, { tokens: step.tokens, turnCount: step.turnCount }]));
+		const { input, output, total } = detachedStatus.totalTokens!;
+		assert.deepEqual(rows.detached?.tokens, { input, output, total });
+		assert.equal(rows.detached?.turnCount, detachedStatus.steps?.[0]?.turnCount);
+		assert.ok((rows.inline?.tokens?.total ?? 0) > 0);
+		assert.equal((rows.detached?.tokens?.total ?? 0) + (rows.inline?.tokens?.total ?? 0), status.totalTokens?.total);
 	});
 
 	it("persists workflow parent metadata in an async worktree child status and result", { skip: !createSubagentExecutor || process.platform === "win32" ? "executor unavailable or worktree paths differ on Windows" : undefined }, async () => {
