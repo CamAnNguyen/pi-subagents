@@ -612,15 +612,20 @@ const queuedWakesSymbol = Symbol.for("pi-subagents.queued-completion-wakes.v2");
 const wakeGlobal = globalThis as typeof globalThis & { [queuedWakesSymbol]?: WeakMap<object, QueuedWakes> };
 const queuedWakes = wakeGlobal[queuedWakesSymbol] ?? (wakeGlobal[queuedWakesSymbol] = new WeakMap<object, QueuedWakes>());
 
-function sendCompletion(pi: Pick<ParentWake, "sendMessage">, items: PendingCompletion[], unstartedWakes: string[]): boolean {
+const COMPLETION_ACTION = "Read the saved results above and resume the already-authorized parent task, or report completion. If approval is required, explicitly ask the user. Do not silently yield, rerun completed work, or infer new authorization.";
+function sendCompletion(pi: Pick<ParentWake, "sendMessage">, items: PendingCompletion[], unstartedWakes: string[], unansweredCompletions: Map<string, { reminded: boolean }>): boolean {
 	if (items.length === 0) return true;
 	const details = items.map((item) => item.details);
-	const content = details.length === 1 ? formatSingleCompletion(details[0]!) : formatGroupedCompletion(details);
-	const display = details.some((detail) => detail.source === "foreground" || detail.status !== "completed" || detail.scheduleOrigin !== undefined);
 	const triggerTurn = items.some((item) => item.triggerTurn);
+	const formatted = details.length === 1 ? formatSingleCompletion(details[0]!) : formatGroupedCompletion(details);
+	const content = triggerTurn ? `${formatted}\n\nParent action: ${COMPLETION_ACTION}` : formatted;
+	const display = details.some((detail) => detail.source === "foreground" || detail.status !== "completed" || detail.scheduleOrigin !== undefined);
 	// Pi can queue an accepted wake behind the current turn or past agent_settled.
 	// Recorded before sending in case Pi starts the message synchronously.
-	if (triggerTurn) unstartedWakes.push(content);
+	if (triggerTurn) {
+		unstartedWakes.push(content);
+		unansweredCompletions.set(content, { reminded: false });
+	}
 	try {
 		const appended = pi.sendMessage(
 			{
@@ -634,7 +639,10 @@ function sendCompletion(pi: Pick<ParentWake, "sendMessage">, items: PendingCompl
 		if (appended) unstartedWakes.splice(unstartedWakes.lastIndexOf(content), 1);
 		return true;
 	} catch {
-		if (triggerTurn) unstartedWakes.splice(unstartedWakes.lastIndexOf(content), 1);
+		if (triggerTurn) {
+			unstartedWakes.splice(unstartedWakes.lastIndexOf(content), 1);
+			unansweredCompletions.delete(content);
+		}
 		return false;
 	}
 }
@@ -783,7 +791,7 @@ export function buildCompletionDetails(result: CompletionNotification): Subagent
 }
 
 export default function registerSubagentNotify(
-	pi: Pick<ExtensionAPI, "events"> & Pick<ParentWake, "sendMessage">,
+	pi: Pick<ExtensionAPI, "events"> & Partial<Pick<ExtensionAPI, "on">> & Pick<ParentWake, "sendMessage">,
 	state: Pick<SubagentState, "currentSessionId" | "completionOwnerId">,
 	options: RegisterSubagentNotifyOptions = {},
 ): CompletionNotifier {
@@ -795,6 +803,8 @@ export default function registerSubagentNotify(
 	const batchConfig = resolveCompletionBatchConfig(options.batchConfig);
 	const batchers = new Map<string, CompletionBatcher<PendingCompletion>>();
 	let unstartedWakes: string[] = [];
+	const unansweredCompletions = new Map<string, { reminded: boolean }>();
+	let boundSessionId: string | undefined;
 	let bound = false;
 	let disposed = false;
 	const ownsResult = options.ownership?.owns
@@ -832,7 +842,7 @@ export default function registerSubagentNotify(
 			void claim.outcome.then((outcome) => settle([item], outcome, outcome ? undefined : "send_failed"));
 		}
 		const claimedItems = claimed.map(({ item }) => item);
-		const sent = sendCompletion(pi, claimedItems, unstartedWakes);
+		const sent = sendCompletion(pi, claimedItems, unstartedWakes, unansweredCompletions);
 		for (const { claim } of claimed) claim.settle?.(sent);
 		settle(claimedItems, sent, sent ? "send_accepted" : "send_failed");
 	};
@@ -909,6 +919,53 @@ export default function registerSubagentNotify(
 		return completion;
 	};
 
+	const unsubscribeSettle = pi.on?.("agent_before_settle", (event) => {
+		if (disposed || event.outcome !== "completed" || event.continue || event.context.pendingMessages.length)
+			return;
+		const messages = event.context.contextMessages;
+		const ignored: Array<[string, { reminded: boolean }]> = [];
+		for (const [content, notice] of unansweredCompletions) {
+			const index = messages.findLastIndex(message => message.role === "custom"
+				&& message.customType === "subagent-notify" && message.content === content);
+			if (index === -1) {
+				// Removed by compaction or branch switch; never revive a stale notice.
+				unansweredCompletions.delete(content);
+				continue;
+			}
+			const acted = messages.slice(index + 1).some(message => message.role === "assistant"
+				&& message.content.some(part => part.type === "toolCall"
+					|| (part.type === "text" && part.text.trim())));
+			if (acted) {
+				unansweredCompletions.delete(content);
+				continue;
+			}
+			ignored.push([content, notice]);
+		}
+		if (!ignored.length)
+			return;
+		const fresh = ignored.filter(([, notice]) => !notice.reminded);
+		if (fresh.length && event.context.canContinue) {
+			for (const [, notice] of fresh)
+				notice.reminded = true;
+			return {
+				entries: [{
+					type: "custom_message", customType: "subagent-completion-unanswered", display: true,
+					content: "Completion wake ended without a visible response or tool action. " + COMPLETION_ACTION
+						+ "\n\n" + ignored.map(([content]) => content).join("\n\n"),
+				}],
+				continue: true,
+			};
+		}
+		for (const [content] of ignored)
+			unansweredCompletions.delete(content);
+		return {
+			entries: [{
+				type: "custom_message", customType: "subagent-completion-unhandled", display: true,
+				content: "UNHANDLED: parent yielded without responding to subagent completion. Automatic reminder budget exhausted. Results remain saved; no work was rerun and no approval was inferred.\n\n"
+					+ ignored.map(([content]) => content).join("\n\n"),
+			}],
+		};
+	});
 	const unsubscribeAsync = pi.events.on(SUBAGENT_ASYNC_COMPLETE_EVENT, (data) => {
 		if ((data as CompletionNotification).awaitedByWorkflow === true) return;
 		void deliver(data as CompletionNotification);
@@ -928,6 +985,8 @@ export default function registerSubagentNotify(
 		bindSession(sessionManager) {
 			if (disposed) return;
 			const sessionId = sessionManager.getSessionId(); // UUID, not state.currentSessionId's possible file path.
+			if (bound && boundSessionId !== sessionId) unansweredCompletions.clear();
+			boundSessionId = sessionId;
 			const retained = queuedWakes.get(sessionManager);
 			const wakes = retained?.sessionId === sessionId ? retained.wakes : [];
 			// Before the first bind, local wakes belong to this session; after it, to the previous one.
@@ -947,7 +1006,8 @@ export default function registerSubagentNotify(
 			disposed = true;
 			for (const batcher of batchers.values()) settle(batcher.dispose(), false, "dispose_pending");
 			batchers.clear();
-			for (const unsubscribe of [unsubscribeAsync, unsubscribeForeground]) {
+			unansweredCompletions.clear();
+			for (const unsubscribe of [unsubscribeAsync, unsubscribeForeground, unsubscribeSettle]) {
 				try {
 					unsubscribe?.();
 				} catch {

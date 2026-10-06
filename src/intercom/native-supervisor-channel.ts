@@ -637,6 +637,8 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 		return state;
 	};
 	const pending = new Map<string, PendingSupervisorRequest>();
+	// One continuation and one warning per request; never auto-answer or loop.
+	const settleNotices = new Map<string, "reminded" | "warned">();
 	const requestCorrelations = new Map<string, SupervisorRequestCorrelation>();
 	const correlationKey = (request: { runId: string; agent: string; childIndex: number; toolCallId?: string }): string | undefined => {
 		if (!request.toolCallId) return undefined;
@@ -665,6 +667,7 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 		pruneRequestCorrelations();
 	};
 	const observeRequestLifecycle: SupervisorRequestLifecycleObserver = (request, lifecycle) => {
+		settleNotices.delete(request.id);
 		if (lifecycle !== "wrong-session") rememberResolvedRequest(request);
 	};
 	const getSupervisorRequestState = (event: ControlEvent): SupervisorRequestState => {
@@ -787,6 +790,44 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 		}
 		channels?.retire?.();
 	};
+
+	pi.on?.("agent_before_settle", (event) => {
+		if (!started || event.outcome !== "completed")
+			return;
+		refreshPendingRequests(pending, state, observeRequestLifecycle, runState);
+		const requests = [...pending.values()].filter(request => request.expectsReply);
+		if (!requests.length || event.context.pendingMessages.length)
+			return;
+		const unanswered = requests.filter(request => !settleNotices.has(request.id));
+		if (unanswered.length && event.context.canContinue) {
+			for (const request of unanswered)
+				settleNotices.set(request.id, "reminded");
+			return {
+				entries: [{
+					type: "custom_message",
+					customType: "subagent-supervisor-unanswered",
+					content: "Supervisor decisions remain pending. Check subagent_supervisor({ action: \"pending\" }), then answer each request within your authority before yielding. If user approval is required, explicitly ask the user and state which child remains blocked. Do not auto-approve or describe blocked children as still working.\n\n" + requests.map(requestVisibleText).join("\n\n"),
+					display: true,
+					details: { requestIds: requests.map(request => request.id) },
+				}],
+				continue: true,
+			};
+		}
+		const unflagged = requests.filter(request => settleNotices.get(request.id) !== "warned");
+		if (!unflagged.length)
+			return;
+		for (const request of unflagged)
+			settleNotices.set(request.id, "warned");
+		return {
+			entries: [{
+				type: "custom_message",
+				customType: "subagent-supervisor-blocked",
+				content: "BLOCKED: supervisor yielded with unresolved child decisions. No reply or approval was sent by this safeguard. Explicit user escalation may be required; inspect pending requests. Automatic reminder budget exhausted for these requests.\n\n" + unflagged.map(formatPendingLine).join("\n\n"),
+				display: true,
+				details: { blocked: true, requestIds: unflagged.map(request => request.id) },
+			}],
+		};
+	});
 
 	const startPolling = (): void => {
 		if (poller) return;
@@ -919,6 +960,7 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 			if (deferredWatcherRefresh) timers.clearImmediate(deferredWatcherRefresh);
 			deferredWatcherRefresh = undefined;
 			pending.clear();
+			settleNotices.clear();
 			requestCorrelations.clear();
 			seenFiles.clear();
 		},

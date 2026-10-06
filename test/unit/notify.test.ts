@@ -24,6 +24,7 @@ import { createResultDeliveryOwnership } from "../../src/runs/background/result-
 import { createParentWake } from "../../src/shared/parent-wake.ts";
 
 const COMPLETION_OWNER_ID = "completion-owner-a";
+const completionContent = (content: string) => `${content}\n\nParent action: Read the saved results above and resume the already-authorized parent task, or report completion. If approval is required, explicitly ask the user. Do not silently yield, rerun completed work, or infer new authorization.`;
 
 it("keeps reload wakes scoped to one session manager and clears them on quit", async () => {
 	const owner = SessionManager.inMemory();
@@ -394,7 +395,7 @@ describe("registerSubagentNotify", () => {
 		assert.deepEqual(sent[0], {
 			message: {
 				customType: "subagent-notify",
-				content: "Background task completed: **worker**\n\n(no output)",
+				content: completionContent("Background task completed: **worker**\n\n(no output)"),
 				display: false,
 			},
 			options: { triggerTurn: true },
@@ -508,7 +509,7 @@ describe("registerSubagentNotify", () => {
 		assert.deepEqual(sent[0], {
 			message: {
 				customType: "subagent-notify",
-				content: "Detached foreground task completed: **reviewer**\n\nRecovered final review",
+				content: completionContent("Detached foreground task completed: **reviewer**\n\nRecovered final review"),
 				display: true,
 			},
 			options: { triggerTurn: true },
@@ -550,7 +551,7 @@ describe("registerSubagentNotify", () => {
 		assert.deepEqual(sent[0], {
 			message: {
 				customType: "subagent-notify",
-				content: `Background task completed: **worker** (2/3)\n\n${summary}`,
+				content: completionContent(`Background task completed: **worker** (2/3)\n\n${summary}`),
 				display: false,
 			},
 			options: { triggerTurn: true },
@@ -575,7 +576,7 @@ describe("registerSubagentNotify", () => {
 		assert.deepEqual(sent, [{
 			message: {
 				customType: "subagent-notify",
-				content: "Background task completed: **worker**\n\nDone\n\nSession file: /tmp/session.jsonl",
+				content: completionContent("Background task completed: **worker**\n\nDone\n\nSession file: /tmp/session.jsonl"),
 				display: false,
 			},
 			options: { triggerTurn: true },
@@ -600,7 +601,7 @@ describe("registerSubagentNotify", () => {
 		assert.deepEqual(sent[0], {
 			message: {
 				customType: "subagent-notify",
-				content: "Background task paused: **worker**\n\nPaused after interrupt. Waiting for explicit next action.",
+				content: completionContent("Background task paused: **worker**\n\nPaused after interrupt. Waiting for explicit next action."),
 				display: true,
 			},
 			options: { triggerTurn: true },
@@ -628,7 +629,7 @@ describe("registerSubagentNotify", () => {
 		assert.deepEqual(sent[0], {
 			message: {
 				customType: "subagent-notify",
-				content: "Background task paused: **workflow**\n\nRun 'detaches' detached for intercom coordination.\n\nChild outputs:\n- key=detaches run=child-1 status=paused\n  Saved output: unavailable\n  Preview: unavailable (no safe inline output)\n\nWorkflow run: workflow-1\nChild runs: detaches=child-1 (paused)",
+				content: completionContent("Background task paused: **workflow**\n\nRun 'detaches' detached for intercom coordination.\n\nChild outputs:\n- key=detaches run=child-1 status=paused\n  Saved output: unavailable\n  Preview: unavailable (no safe inline output)\n\nWorkflow run: workflow-1\nChild runs: detaches=child-1 (paused)"),
 				display: true,
 			},
 			options: { triggerTurn: true },

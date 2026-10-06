@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-export const PARENT_WAKE_TEXT = "Subagent updates above.";
+export const PARENT_WAKE_TEXT = "Inspect subagent updates above. Answer pending supervisor requests within your authority. For completed work, read saved results and resume the already-authorized parent task, or report completion. If approval is required, explicitly ask the user. Do not silently yield, rerun completed work, or infer new authorization.";
 // A handled or failed wake prompt emits no agent_start. Past this deadline an idle parent's
 // wake counts as abandoned: its notices are already in the session, only the turn is lost.
 const WAKE_PENDING_MS = 10_000;
