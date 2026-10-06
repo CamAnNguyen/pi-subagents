@@ -799,11 +799,11 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 		if (!requests.length || event.context.pendingMessages.length)
 			return;
 		const unanswered = requests.filter(request => !settleNotices.has(request.id));
-		if (unanswered.length && event.context.canContinue) {
+		if (unanswered.length) {
 			for (const request of unanswered)
 				settleNotices.set(request.id, "reminded");
 			return {
-				entries: [{
+				entries: [...event.entries, {
 					type: "custom_message",
 					customType: "subagent-supervisor-unanswered",
 					content: "Supervisor decisions remain pending. Check subagent_supervisor({ action: \"pending\" }), then answer each request within your authority before yielding. If user approval is required, explicitly ask the user and state which child remains blocked. Do not auto-approve or describe blocked children as still working.\n\n" + requests.map(requestVisibleText).join("\n\n"),
@@ -819,7 +819,7 @@ export function createNativeSupervisorChannel(pi: ExtensionAPI, state: SubagentS
 		for (const request of unflagged)
 			settleNotices.set(request.id, "warned");
 		return {
-			entries: [{
+			entries: [...event.entries, {
 				type: "custom_message",
 				customType: "subagent-supervisor-blocked",
 				content: "BLOCKED: supervisor yielded with unresolved child decisions. No reply or approval was sent by this safeguard. Explicit user escalation may be required; inspect pending requests. Automatic reminder budget exhausted for these requests.\n\n" + unflagged.map(formatPendingLine).join("\n\n"),

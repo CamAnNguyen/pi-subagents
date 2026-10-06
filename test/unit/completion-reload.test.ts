@@ -19,7 +19,7 @@ function harness(manager: { getSessionId(): string }, appended = false) {
 			success: true, agent: "workflow", summary: "Saved report ready.",
 		}),
 		settle: (messages: any[]) => beforeSettle({
-			outcome: "completed", continue: false,
+			outcome: "completed", continue: false, entries: [],
 			context: { canContinue: true, pendingMessages: [], contextMessages: messages },
 		}),
 	};

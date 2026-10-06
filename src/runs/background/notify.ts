@@ -943,11 +943,11 @@ export default function registerSubagentNotify(
 		if (!ignored.length)
 			return;
 		const fresh = ignored.filter(([, notice]) => !notice.reminded);
-		if (fresh.length && event.context.canContinue) {
+		if (fresh.length) {
 			for (const [, notice] of fresh)
 				notice.reminded = true;
 			return {
-				entries: [{
+				entries: [...event.entries, {
 					type: "custom_message", customType: "subagent-completion-unanswered", display: true,
 					content: "Completion wake ended without a visible response or tool action. " + COMPLETION_ACTION
 						+ "\n\n" + ignored.map(([content]) => content).join("\n\n"),
@@ -958,7 +958,7 @@ export default function registerSubagentNotify(
 		for (const [content] of ignored)
 			unansweredCompletions.delete(content);
 		return {
-			entries: [{
+			entries: [...event.entries, {
 				type: "custom_message", customType: "subagent-completion-unhandled", display: true,
 				content: "UNHANDLED: parent yielded without responding to subagent completion. Automatic reminder budget exhausted. Results remain saved; no work was rerun and no approval was inferred.\n\n"
 					+ ignored.map(([content]) => content).join("\n\n"),

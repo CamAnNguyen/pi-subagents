@@ -22,7 +22,7 @@ const pi = {
 const state = { supervisorOwnerSessionId: 'owner', foregroundControls: new Map(), asyncJobs: new Map() };
 const channel = createNativeSupervisorChannel(pi, state, { getChannelDirs: () => ({ dirs: [dir] }) });
 const settle = (overrides = {}) => handlers.get('agent_before_settle')({
-  outcome: 'completed', context: { canContinue: true, pendingMessages: [] }, ...overrides,
+  outcome: 'completed', entries: [], context: { canContinue: true, pendingMessages: [] }, ...overrides,
 });
 function request(id, overrides = {}) {
   fs.mkdirSync(path.join(dir, 'requests'), { recursive: true });
@@ -67,10 +67,15 @@ try {
   state.asyncJobs.set('child', { status: 'complete' });
   assert.equal(settle(), undefined, 'completed child excluded');
   state.asyncJobs.clear();
-  request('cannot-continue');
-  const blocked = settle({ context: { canContinue: false, pendingMessages: [] } });
+  request('pre-draft-cannot-continue');
+  const preDraftContext = { context: { canContinue: false, pendingMessages: [] } };
+  const appendedReminder = settle(preDraftContext);
+  assert.equal(appendedReminder.continue, true, 'appended reminder supplies runnable context');
+  assert.equal(appendedReminder.entries[0].customType, 'subagent-supervisor-unanswered');
+  const blocked = settle(preDraftContext);
   assert.equal(blocked.continue, undefined);
-  assert.equal(blocked.entries[0].details.blocked, true, 'non-continuable state flags instead of looping');
+  assert.equal(blocked.entries[0].details.blocked, true, 'exhausted reminder budget flags instead of looping');
+  assert.equal(settle(preDraftContext), undefined, 'pre-draft continuation state cannot reset budget');
   channel.dispose();
   assert.equal(settle(), undefined, 'disposed runtime inert');
 } finally {
@@ -99,7 +104,7 @@ const notifier = registerNotify(pi, state, { batchConfig: { enabled: false } });
 const sessionManager = { getSessionId: () => 'session' };
 notifier.bindSession(sessionManager);
 const settle = (overrides = {}) => handlers.get('agent_before_settle')({
-  outcome: 'completed', continue: false,
+  outcome: 'completed', continue: false, entries: [],
   context: { contextMessages: messages, pendingMessages: [], canContinue: true }, ...overrides,
 });
 const deliver = (overrides = {}) => notifier.deliver({
@@ -150,9 +155,15 @@ try {
   messages.length = 0;
   assert.equal(settle(), undefined, 'removed context cannot revive stale completion');
   await deliver();
-  const blocked = settle({ context: { contextMessages: messages, pendingMessages: [], canContinue: false } });
+  const preDraftContext = { context: { contextMessages: messages, pendingMessages: [], canContinue: false } };
+  const appendedReminder = settle(preDraftContext);
+  assert.equal(appendedReminder.continue, true, 'appended reminder supplies runnable context');
+  assert.equal(appendedReminder.entries[0].customType, 'subagent-completion-unanswered');
+  messages.push({ ...appendedReminder.entries[0], role: 'custom' });
+  const blocked = settle(preDraftContext);
   assert.equal(blocked.continue, undefined);
   assert.match(blocked.entries[0].content, /^UNHANDLED:/);
+  assert.equal(settle(preDraftContext), undefined, 'pre-draft continuation state cannot reset budget');
   await deliver();
   notifier.bindSession({ getSessionId: () => 'other' });
   assert.equal(settle(), undefined, 'session switch clears acknowledgement state');
