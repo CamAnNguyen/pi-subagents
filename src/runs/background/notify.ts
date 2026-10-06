@@ -607,7 +607,7 @@ const processCompletionSendRegistry = processGlobal[completionSendRegistrySymbol
 
 // Reload replaces extension instances, not Pi's session manager or queued wakes.
 // A manager can change sessions; retain wakes only while its UUID is unchanged.
-type QueuedWakes = { sessionId: string; wakes: string[] };
+type QueuedWakes = { sessionId: string; wakes: string[]; unansweredCompletions: Map<string, { reminded: boolean }> };
 const queuedWakesSymbol = Symbol.for("pi-subagents.queued-completion-wakes.v2");
 const wakeGlobal = globalThis as typeof globalThis & { [queuedWakesSymbol]?: WeakMap<object, QueuedWakes> };
 const queuedWakes = wakeGlobal[queuedWakesSymbol] ?? (wakeGlobal[queuedWakesSymbol] = new WeakMap<object, QueuedWakes>());
@@ -803,8 +803,7 @@ export default function registerSubagentNotify(
 	const batchConfig = resolveCompletionBatchConfig(options.batchConfig);
 	const batchers = new Map<string, CompletionBatcher<PendingCompletion>>();
 	let unstartedWakes: string[] = [];
-	const unansweredCompletions = new Map<string, { reminded: boolean }>();
-	let boundSessionId: string | undefined;
+	let unansweredCompletions = new Map<string, { reminded: boolean }>();
 	let bound = false;
 	let disposed = false;
 	const ownsResult = options.ownership?.owns
@@ -985,18 +984,24 @@ export default function registerSubagentNotify(
 		bindSession(sessionManager) {
 			if (disposed) return;
 			const sessionId = sessionManager.getSessionId(); // UUID, not state.currentSessionId's possible file path.
-			if (bound && boundSessionId !== sessionId) unansweredCompletions.clear();
-			boundSessionId = sessionId;
 			const retained = queuedWakes.get(sessionManager);
 			const wakes = retained?.sessionId === sessionId ? retained.wakes : [];
+			const unanswered = retained?.sessionId === sessionId ? retained.unansweredCompletions : new Map<string, { reminded: boolean }>();
 			// Before the first bind, local wakes belong to this session; after it, to the previous one.
-			if (!bound) wakes.push(...unstartedWakes);
+			if (!bound) {
+				wakes.push(...unstartedWakes);
+				for (const [content, notice] of unansweredCompletions) unanswered.set(content, notice);
+			}
 			bound = true;
 			unstartedWakes = wakes;
-			queuedWakes.set(sessionManager, { sessionId, wakes });
+			unansweredCompletions = unanswered;
+			queuedWakes.set(sessionManager, { sessionId, wakes, unansweredCompletions });
 		},
 		sessionShutdown(reason) {
-			if (reason !== "reload") unstartedWakes.length = 0;
+			if (reason !== "reload") {
+				unstartedWakes.length = 0;
+				unansweredCompletions.clear();
+			}
 		},
 		flush() {
 			for (const batcher of batchers.values()) batcher.flush();
@@ -1006,7 +1011,8 @@ export default function registerSubagentNotify(
 			disposed = true;
 			for (const batcher of batchers.values()) settle(batcher.dispose(), false, "dispose_pending");
 			batchers.clear();
-			unansweredCompletions.clear();
+			// Retained state belongs to the session manager; disposal must not erase it on reload.
+			unansweredCompletions = new Map();
 			for (const unsubscribe of [unsubscribeAsync, unsubscribeForeground, unsubscribeSettle]) {
 				try {
 					unsubscribe?.();
