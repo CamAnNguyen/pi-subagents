@@ -8,7 +8,7 @@ function harness(manager: { getSessionId(): string }, appended = false) {
 	const sent: any[] = [];
 	const notifier = registerNotify({
 		events: { on: () => () => {} },
-		on(_name: string, handler: any) { beforeSettle = handler; return () => {}; },
+		on(_name: string, handler: any) { beforeSettle = handler; return () => { beforeSettle = undefined; }; },
 		sendMessage(message: any) { sent.push(message); return appended; },
 	} as never, { currentSessionId: manager.getSessionId(), completionOwnerId: "owner" }, { batchConfig: { enabled: false } });
 	return {
@@ -18,7 +18,7 @@ function harness(manager: { getSessionId(): string }, appended = false) {
 			id: randomUUID(), sessionId: manager.getSessionId(), completionOwnerId: "owner",
 			success: true, agent: "workflow", summary: "Saved report ready.",
 		}),
-		settle: (messages: any[]) => beforeSettle({
+		settle: (messages: any[]) => beforeSettle?.({
 			outcome: "completed", continue: false, entries: [],
 			context: { canContinue: true, pendingMessages: [], contextMessages: messages },
 		}),
@@ -84,7 +84,8 @@ it("isolates retained acknowledgement state and merges completions accepted befo
 	assert.equal(replacement.settle([original, early]).continue, true);
 	const warning = replacement.settle([original, early]);
 	assert.match(warning.entries[0].content, /UNHANDLED:/);
-	assert.match(warning.entries[0].content, /Saved report ready/);
+	assert.match(warning.entries[0].content, /completion notices above/);
+	assert.doesNotMatch(warning.entries[0].content, /Saved report ready/);
 	await replacement.deliver();
 	const latest = { ...replacement.sent.at(-1), role: "custom" };
 	id = randomUUID();
